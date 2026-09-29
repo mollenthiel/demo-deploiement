@@ -1,0 +1,5 @@
+#!/bin/sh
+# Construit la version dans son dossier, sans toucher la prod. Code non nul : refus.
+set -eu
+for f in $(find public src bin -name '*.php'); do php -l "$f" >/dev/null; done
+echo "construction ok ($DEPLOIEMENT_VERSION)"

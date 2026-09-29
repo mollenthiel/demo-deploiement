@@ -1,0 +1,4 @@
+#!/bin/sh
+# Passe avant la bascule : chaque migration reste compatible avec la version en prod.
+set -eu
+php bin/migrer.php

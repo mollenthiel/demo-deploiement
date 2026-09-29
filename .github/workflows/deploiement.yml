@@ -1,0 +1,95 @@
+# Mise en prod partagee (convention CTO d'apollo, QG #4295).
+# - pull_request : tests, exiges par la protection de branche avant fusion ;
+# - push sur main : tests, puis envoi du depot a apollo, qui construit, migre,
+#   bascule et journalise ; la cle ne peut que deployer CE site ;
+# - lancement manuel : versions (liste et journal) ou retour a une version.
+name: deploiement
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "versions ou retour"
+        type: choice
+        options: [versions, retour]
+        default: versions
+      version:
+        description: "retour : version cible (vide = la precedente)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  HOTE: 51.38.40.27
+  HOTE_CLE: "51.38.40.27 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGcH/J26wX9kc588Wrs4N6EECid0tRNd2oQV0UQKMYQz"
+
+jobs:
+  tests:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+      - run: sh deploiement/tester
+
+  deployer:
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Cle de deploiement
+        env:
+          CLE: ${{ secrets.DEPLOIEMENT_CLE }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$CLE" | base64 -d > ~/.ssh/deploiement
+          chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$HOTE_CLE" > ~/.ssh/known_hosts
+      - name: Mise en prod
+        run: |
+          git bundle create "$RUNNER_TEMP/depot.bundle" main
+          ssh -i ~/.ssh/deploiement -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "deploiement@$HOTE" deployer "$GITHUB_SHA" "$GITHUB_ACTOR" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            < "$RUNNER_TEMP/depot.bundle"
+
+  exploiter:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: prod
+      cancel-in-progress: false
+    steps:
+      - name: Cle de deploiement
+        env:
+          CLE: ${{ secrets.DEPLOIEMENT_CLE }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$CLE" | base64 -d > ~/.ssh/deploiement
+          chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$HOTE_CLE" > ~/.ssh/known_hosts
+      - name: ${{ inputs.action }}
+        env:
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$ACTION" = retour ]; then
+            set -- retour "${VERSION:-precedente}" "$GITHUB_ACTOR"
+          else
+            set -- versions
+          fi
+          ssh -i ~/.ssh/deploiement -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "deploiement@$HOTE" "$@" < /dev/null
