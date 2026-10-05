@@ -1,0 +1,61 @@
+# Relecture de l'autre cote, exigee pour les seuls changements de base (QG #4295).
+# Controle requis « relecture » : vert sans migration ; avec migration, vert seulement
+# si un compte ayant le droit d'ecriture sur le depot, autre que l'auteur, a approuve
+# le dernier commit de la demande.
+# Remplace CODEOWNERS : GitHub tient la relecture des proprietaires pour faite quand
+# l'auteur est lui-meme proprietaire du chemin (constate le 05/10/2026) ; avec les
+# deux cotes proprietaires de migrations/, chacun fusionnerait seul les siennes.
+name: relecture
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  # chemins qui exigent la relecture (expression etendue, sur le chemin du fichier)
+  MIGRATIONS: '^migrations/'
+
+jobs:
+  relecture:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Relecture des migrations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTEUR: ${{ github.event.pull_request.user.login }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          base="repos/$GITHUB_REPOSITORY/pulls/$PR"
+          gh api --paginate "$base/files" --jq '.[].filename' > fichiers
+          if ! grep -Eq "$MIGRATIONS" fichiers; then
+            echo "Aucune migration : relecture non exigee."
+            exit 0
+          fi
+          grep -E "$MIGRATIONS" fichiers | sed 's/^/migration : /'
+          # dernier avis de chaque relecteur ; seul compte celui du commit courant
+          gh api --paginate "$base/reviews" \
+            --jq '.[] | select(.state != "COMMENTED" and .state != "PENDING") | [.user.login, .state, .commit_id] | @tsv' \
+            | awk -F'\t' '{ dernier[$1] = $2 "\t" $3 } END { for (u in dernier) print u "\t" dernier[u] }' > avis
+          while IFS="$(printf '\t')" read -r qui etat commit; do
+            [ "$etat" = APPROVED ] && [ "$commit" = "$SHA" ] || continue
+            if [ "$(printf %s "$qui" | tr A-Z a-z)" = "$(printf %s "$AUTEUR" | tr A-Z a-z)" ]; then
+              continue
+            fi
+            droit=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$qui/permission" --jq .permission 2>/dev/null || echo aucun)
+            case "$droit" in
+              admin|maintain|write)
+                echo "Migration approuvee par $qui ($droit), autre que l'auteur $AUTEUR."
+                exit 0 ;;
+              *) echo "Avis de $qui ignore : droit « $droit » sur le depot." ;;
+            esac
+          done < avis
+          echo "::error::Migration : approbation du dernier commit exigee d'un compte de l'autre cote (droit d'ecriture, autre que $AUTEUR)."
+          exit 1
