@@ -10,4 +10,4 @@ try {
     exit("base injoignable\n");
 }
 header('Content-Type: text/plain; charset=utf-8');
-echo "Salon fictif (v2), version $version, $n rendez-vous, massage 60 min : ".Tarif::ttc(5000)." centimes TTC\n";
+echo "Salon fictif (v2), version $version, $n rendez-vous, massage d une heure : ".Tarif::ttc(5000)." centimes TTC\n";
